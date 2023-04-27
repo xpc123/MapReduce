@@ -1,0 +1,42 @@
+# 编译输出
+bin/
+*.o
+*.a
+*.exe
+
+# IDE和编辑器
+.idea/
+.vscode/
+*.pro.user
+*.qbs.user
+*.qmake.stash
+*.cbp
+*.layout
+*.depend
+*.user
+*.suo
+*.ncb
+*.aps
+*.bsc
+*.sdf
+*.opensdf
+*.cscope
+*.tags
+*.orig
+*.rej
+
+# 工程自动生成的文件
+Makefile
+cmake-build-debug/
+CMakeFiles/
+CMakeScripts/
+build/
+compile_commands.json
+conanbuildinfo.cmake
+conanbuildinfo.txt
+conaninfo.txt
+
+# 依赖库
+lib/
+vendor/
+thirdparty/
