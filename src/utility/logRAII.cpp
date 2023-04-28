@@ -1,4 +1,4 @@
-#include <logRAII.h>
+#include <../../include/logRAII.h>
 
 
 logRAII::logRAII(const std::string& category, const std::string& func): m_category(category)
