@@ -23,6 +23,8 @@
 
 using namespace std;
 
+log4cpp::Category& logger = log4cpp::Category::getInstance("worker");
+
 #define MAX_REDUCE_NUM 15
 //可能造成的bug，考虑write多次写，每次写1024用while读进buf
 //c_str()返回的是一个临时指针，值传递没事，但若涉及地址出错
@@ -58,8 +60,8 @@ int fileId = 0;
 //对每个字符串求hash找到其对应要分配的reduce线程
 int ihash(string str){
 
-    logRAII LOG("worker", __FUNCTION__);
-    LOG.log("worker ihash begin");
+    logRAII logRAIIObj(__FUNCTION__);
+    logger.info("worker ihash begin");
 
     int sum = 0;
     for(int i = 0; i < str.size(); i++){
@@ -71,8 +73,8 @@ int ihash(string str){
 //删除所有写入中间值的临时文件
 void removeFiles(){
 
-    logRAII LOG("worker", __FUNCTION__);
-    LOG.log("worker removeFiles begin");
+    logRAII logRAIIObj(__FUNCTION__);
+    logger.info("worker removeFiles begin");
 
 
     string path;
@@ -88,8 +90,8 @@ void removeFiles(){
 //取得  key:filename, value:content 的kv对作为map任务的输入
 KeyValue getContent(char* file){
 
-    logRAII LOG("worker", __FUNCTION__);
-    LOG.log("worker getContent begin");
+    logRAII logRAIIObj(__FUNCTION__);
+    logger.info("worker getContent begin");
 
     int fd = open(file, O_RDONLY);
     int length = lseek(fd, 0, SEEK_END);
@@ -111,8 +113,8 @@ KeyValue getContent(char* file){
 //将map任务产生的中间值写入临时文件
 void writeKV(int fd, const KeyValue& kv){
 
-    logRAII LOG("worker", __FUNCTION__);
-    LOG.log("worker writeKV begin");
+    logRAII logRAIIObj(__FUNCTION__);
+    logger.info("worker writeKV begin");
 
     string tmp = kv.key + ",1 ";
     int len = write(fd, tmp.c_str(), tmp.size());
@@ -126,8 +128,8 @@ void writeKV(int fd, const KeyValue& kv){
 //创建每个map任务对应的不同reduce号的中间文件并调用 -> writeKV 写入磁盘
 void writeInDisk(const vector<KeyValue>& kvs, int mapTaskIdx){
 
-    logRAII LOG("worker", __FUNCTION__);
-    LOG.log("worker writeInDisk begin");
+    logRAII logRAIIObj(__FUNCTION__);
+    logger.info("worker writeInDisk begin");
 
     for(const auto& v : kvs){
         int reduce_idx = ihash(v.key);
@@ -147,8 +149,8 @@ void writeInDisk(const vector<KeyValue>& kvs, int mapTaskIdx){
 //以char类型的op为分割拆分字符串
 vector<string> split(string text, char op){
 
-    logRAII LOG("worker", __FUNCTION__);
-    LOG.log("worker split1 begin");
+    logRAII logRAIIObj(__FUNCTION__);
+    logger.info("worker split1 begin");
 
     int n = text.size();
     vector<string> str;
@@ -167,8 +169,8 @@ vector<string> split(string text, char op){
 //以逗号为分割拆分字符串
 string split(string text){
 
-    logRAII LOG("worker", __FUNCTION__);
-    LOG.log("worker split2 begin");
+    logRAII logRAIIObj(__FUNCTION__);
+    logger.info("worker split2 begin");
 
 
     string tmp = "";
@@ -183,8 +185,8 @@ string split(string text){
 //获取对应reduce编号的所有中间文件
 vector<string> getAllfile(string path, int op){
 
-    logRAII LOG("worker", __FUNCTION__);
-    LOG.log("worker getAllfile begin");
+    logRAII logRAIIObj(__FUNCTION__);
+    logger.info("worker getAllfile begin");
 
 
     DIR *dir = opendir(path.c_str());
@@ -215,8 +217,8 @@ vector<string> getAllfile(string path, int op){
 //vector中每个元素的形式为"abc 11111";
 vector<KeyValue> Myshuffle(int reduceTaskNum){
 
-    logRAII LOG("worker", __FUNCTION__);
-    LOG.log("worker Myshuffle begin");
+    logRAII logRAIIObj(__FUNCTION__);
+    logger.info("worker Myshuffle begin");
 
     string path;
     vector<string> str;
@@ -251,8 +253,8 @@ vector<KeyValue> Myshuffle(int reduceTaskNum){
 
 void* mapWorker(void* arg){
 
-    logRAII LOG("worker", __FUNCTION__);
-    LOG.log("worker mapWorker begin");
+    logRAII logRAIIObj(__FUNCTION__);
+    logger.info("worker mapWorker begin");
 
 //1、初始化client连接用于后续RPC;获取自己唯一的MapTaskID
     buttonrpc client;
@@ -309,8 +311,8 @@ void* mapWorker(void* arg){
 //用于最后写入磁盘的函数，输出最终结果
 void myWrite(int fd, vector<string>& str){
 
-    logRAII LOG("worker", __FUNCTION__);
-    LOG.log("worker myWrite begin");
+    logRAII logRAIIObj(__FUNCTION__);
+    logger.info("worker myWrite begin");
 
     int len = 0;
     char buf[2];
@@ -327,8 +329,8 @@ void myWrite(int fd, vector<string>& str){
 
 void* reduceWorker(void* arg){
 
-    logRAII LOG("worker", __FUNCTION__);
-    LOG.log("worker reduceWorker begin");
+    logRAII logRAIIObj(__FUNCTION__);
+    logger.info("worker reduceWorker begin");
 
     //removeFiles();
     buttonrpc client;
@@ -376,8 +378,8 @@ void* reduceWorker(void* arg){
 
 //删除最终输出文件，用于程序第二次执行时清除上次保存的结果
 void removeOutputFiles(){
-    logRAII LOG("worker", __FUNCTION__);
-    LOG.log("worker removeOutputFiles begin");
+    logRAII logRAIIObj(__FUNCTION__);
+    logger.info("worker removeOutputFiles begin");
     string path;
     for(int i = 0; i < MAX_REDUCE_NUM; i++){
         path = "mr-out-" + to_string(i);
@@ -390,8 +392,8 @@ int main(){
     
     // log
     log4cpp::PropertyConfigurator::configure("/home/xpc/cppProject/6.824/src/MapReduce/test/test_log4cpp/log.conf");
-    logRAII LOG("worker", __FUNCTION__);
-    LOG.log("worker main begin");
+    logRAII logRAIIObj(__FUNCTION__);
+    logger.info("worker main begin");
 
     pthread_mutex_init(&map_mutex, NULL);
     pthread_cond_init(&cond, NULL);

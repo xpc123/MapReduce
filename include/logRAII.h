@@ -6,9 +6,6 @@
 
 class logRAII{
 public:
-    logRAII(const std::string& category, const std::string& func);
-    void log(const std::string& msg);
+    logRAII(const std::string& func);
     ~logRAII();
-private:
-    std::string m_category;
 };

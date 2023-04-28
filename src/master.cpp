@@ -21,6 +21,8 @@ using namespace std;
 #define MAP_TASK_TIMEOUT 3
 #define REDUCE_TASK_TIMEOUT 5
 
+log4cpp::Category& logger = log4cpp::Category::getInstance("master");
+
 class Master{
 public:
     Master(int mapNum = 8, int reduceNum = 8);  //带缺省值的有参构造，也可通过命令行传参指定，我偷懒少打两个数字直接放构造函数里
@@ -81,8 +83,8 @@ Master::Master(int mapNum, int reduceNum):m_done(false), m_mapNum(mapNum), m_red
 
 void Master::GetAllFile(char* file[], int argc){
 
-    logRAII LOG("master", __FUNCTION__);
-    LOG.log("master GetAllFile begin");
+    logRAII logRAIIObj(__FUNCTION__);
+    logger.info("master GetAllFile begin");
 
     for(int i = 1; i < argc; i++){
         m_list.emplace_back(file[i]);           //xpc: file[i-1], right?
@@ -92,8 +94,8 @@ void Master::GetAllFile(char* file[], int argc){
 
 //map的worker只需要拿到对应的文件名就可以进行map
 string Master::assignTask(){
-    logRAII LOG("master", __FUNCTION__);
-    LOG.log("master assignTask begin");
+    logRAII logRAIIObj(__FUNCTION__);
+    logger.info("master assignTask begin");
 
     if(isMapDone()) return "empty";
     if(!m_list.empty()){
@@ -110,8 +112,8 @@ string Master::assignTask(){
 
 void* Master::waitMapTask(void* arg){
 
-    logRAII LOG("master", __FUNCTION__);
-    LOG.log("master waitMapTask begin");
+    logRAII logRAIIObj(__FUNCTION__);
+    logger.info("master waitMapTask begin");
 
     Master* map = (Master*)arg;
     // printf("wait maphash is %p\n", &map->master->finishedMapTask);
@@ -140,8 +142,8 @@ void* Master::waitMapTask(void* arg){
 
 void Master::waitMap(string filename){
 
-    logRAII LOG("master", __FUNCTION__);
-    LOG.log("master waitMap begin");
+    logRAII logRAIIObj(__FUNCTION__);
+    logger.info("master waitMap begin");
 
     m_assign_lock.lock();
     runningMapWork.push_back(string(filename));  //将分配出去的map任务加入正在运行的工作队列
@@ -154,8 +156,8 @@ void Master::waitMap(string filename){
 //分map任务还是reduce任务进行不同时间计时的计时线程
 void* Master::waitTime(void* arg){
 
-    logRAII LOG("master", __FUNCTION__);
-    LOG.log("master waitTime begin");
+    logRAII logRAIIObj(__FUNCTION__);
+    logger.info("master waitTime begin");
 
     char* op = (char*)arg;
     if(*op == 'm'){
@@ -167,8 +169,8 @@ void* Master::waitTime(void* arg){
 
 void* Master::waitReduceTask(void* arg){
 
-    logRAII LOG("master", __FUNCTION__);
-    LOG.log("master waitReduceTask begin");
+    logRAII logRAIIObj(__FUNCTION__);
+    logger.info("master waitReduceTask begin");
 
     Master* reduce = (Master*)arg;
     void* status;
@@ -193,8 +195,8 @@ void* Master::waitReduceTask(void* arg){
 }
 
 void Master::waitReduce(int reduceIdx){
-    logRAII LOG("master", __FUNCTION__);
-    LOG.log("master waitReduce begin");
+    logRAII logRAIIObj(__FUNCTION__);
+    logger.info("master waitReduce begin");
 
     m_assign_lock.lock();
     runningReduceWork.push_back(reduceIdx); //将分配出去的reduce任务加入正在运行的工作队列
@@ -205,8 +207,8 @@ void Master::waitReduce(int reduceIdx){
 }
 
 void Master::setMapStat(string filename){
-    logRAII LOG("master", __FUNCTION__);
-    LOG.log("master setMapStat begin");
+    logRAII logRAIIObj(__FUNCTION__);
+    logger.info("master setMapStat begin");
 
     m_assign_lock.lock();
     finishedMapTask[filename] = 1;  //通过worker的RPC调用修改map任务的完成状态
@@ -216,8 +218,8 @@ void Master::setMapStat(string filename){
 }
 
 bool Master::isMapDone(){
-    logRAII LOG("master", __FUNCTION__);
-    LOG.log("master isMapDone begin");
+    logRAII logRAIIObj(__FUNCTION__);
+    logger.info("master isMapDone begin");
 
     m_assign_lock.lock();
     if(finishedMapTask.size() != fileNum){  //当统计map任务的hashmap大小达到文件数，map任务结束
@@ -229,8 +231,8 @@ bool Master::isMapDone(){
 }
 
 int Master::assignReduceTask(){
-    logRAII LOG("master", __FUNCTION__);
-    LOG.log("master assignReduceTask begin");
+    logRAII logRAIIObj(__FUNCTION__);
+    logger.info("master assignReduceTask begin");
     
     if(Done()) return -1;
     if(!reduceIndex.empty()){
@@ -246,8 +248,8 @@ int Master::assignReduceTask(){
 
 
 void Master::setReduceStat(int taskIndex){
-    logRAII LOG("master", __FUNCTION__);
-    LOG.log("master setReduceStat begin");
+    logRAII logRAIIObj(__FUNCTION__);
+    logger.info("master setReduceStat begin");
     m_assign_lock.lock();
     finishedReduceTask[taskIndex] = 1;  //通过worker的RPC调用修改reduce任务的完成状态
     // printf(" reduce task%d is finished, reducehash is %p\n", taskIndex, &finishedReduceTask);
@@ -256,8 +258,8 @@ void Master::setReduceStat(int taskIndex){
 }
 
 bool Master::Done(){
-    logRAII LOG("master", __FUNCTION__);
-    LOG.log("master Done begin");
+    logRAII logRAIIObj(__FUNCTION__);
+    logger.info("master Done begin");
     m_assign_lock.lock();
     int len = finishedReduceTask.size(); //reduce的hashmap若是达到reduceNum，reduce任务及总任务完成,xpc: why?
     m_assign_lock.unlock();
@@ -272,8 +274,8 @@ int main(int argc, char* argv[]){
 
     // log
     log4cpp::PropertyConfigurator::configure("/home/xpc/cppProject/6.824/src/MapReduce/test/test_log4cpp/log.conf");
-    logRAII LOG("master", __FUNCTION__);
-    LOG.log("master main begin");
+    logRAII logRAIIObj(__FUNCTION__);
+    logger.info("master main begin");
     // alarm(10);
     buttonrpc server;
     server.as_server(5555);
