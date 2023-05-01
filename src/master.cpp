@@ -32,7 +32,7 @@ public:
     int getReduceNum(){
         return m_reduceNum;
     }
-    string assignTask();                        //分配map任务的函数，RPC
+    string assignMapTask();                        //分配map任务的函数，RPC
     int assignReduceTask();                     //分配reduce任务的函数，RPC
     void setMapStat(string filename);           //设置特定map任务完成的函数，RPC
     bool isMapDone();                           //检验所有map任务是否完成，RPC
@@ -50,58 +50,62 @@ private:
     void waitReduce(int reduceIdx);
 private:
     bool m_done;
-    list<char *> m_list;                        //所有map任务的工作队列, that's fileName
+    list<char *> m_allMapTaskList;                        //所有map任务的工作队列, that's fileName
     locker m_assign_lock;                       //保护共享数据的锁
-    int fileNum;                                //从命令行读取到的文件总数
+    int m_fileNum;                                //从命令行读取到的文件总数
     int m_mapNum;
     int m_reduceNum;
-    unordered_map<string, int> finishedMapTask; //存放所有完成的map任务对应的文件名
-    unordered_map<int, int> finishedReduceTask; //存放所有完成的reduce任务对应的reduce编号
-    vector<int> reduceIndex;                    //所有reduce任务的工作队列
-    vector<string> runningMapWork;              //正在处理的map任务，分配出去就加到这个队列，用于判断超时处理重发
-    int curMapIndex;                            //当前处理第几个map任务
-    int curReduceIndex;                         //当前处理第几个reduce任务
-    vector<int> runningReduceWork;              //正在处理的reduce任务，分配出去就加到这个队列，用于判断超时处理重发
+    unordered_map<string, int> m_finishedMapTask; //存放所有完成的map任务对应的文件名, modified by worker through RPC
+    unordered_map<int, int> m_finishedReduceTask; //存放所有完成的reduce任务对应的reduce编号
+    vector<int> m_allReduceTaskList;                    //所有reduce任务的工作队列
+    vector<string> m_pendingMapWork;              //正在处理的map任务，分配出去就加到这个队列，用于判断超时处理重发
+    int m_curMapIndex;                            //当前处理第几个map任务
+    int m_curReduceIndex;                         //当前处理第几个reduce任务
+    vector<int> m_runningReduceWork;              //正在处理的reduce任务，分配出去就加到这个队列，用于判断超时处理重发
 };
 
 
 Master::Master(int mapNum, int reduceNum):m_done(false), m_mapNum(mapNum), m_reduceNum(reduceNum){
-    m_list.clear();
-    finishedMapTask.clear();
-    finishedReduceTask.clear();
-    runningMapWork.clear();
-    runningReduceWork.clear();
-    curMapIndex = 0;
-    curReduceIndex = 0;
+    
+    logRAII logRAIIObj(__FUNCTION__);
+    logger.info("Master construction: mapNum is %d, reduceNum is %d", mapNum, reduceNum);
+    
+    m_allMapTaskList.clear();
+    m_finishedMapTask.clear();
+    m_finishedReduceTask.clear();
+    m_pendingMapWork.clear();
+    m_runningReduceWork.clear();
+    m_curMapIndex = 0;
+    m_curReduceIndex = 0;
     if(m_mapNum <= 0 || m_reduceNum <= 0){
         throw std::exception();
     }
     for(int i = 0; i < reduceNum; i++){
-        reduceIndex.emplace_back(i);
+        m_allReduceTaskList.emplace_back(i);
     }
 }
 
 void Master::GetAllFile(char* file[], int argc){
 
     logRAII logRAIIObj(__FUNCTION__);
-    logger.info("master GetAllFile begin");
+    logger.info("get all file names from argv");
 
     for(int i = 1; i < argc; i++){
-        m_list.emplace_back(file[i]);           //xpc: file[i-1], right?
+        m_allMapTaskList.emplace_back(file[i]);           //xpc: file[i-1], right?
+        logger.info("the %dth file is: %s", i,file[i]);
     }
-    fileNum = argc - 1;
+    m_fileNum = argc - 1;
 }
 
 //map的worker只需要拿到对应的文件名就可以进行map
-string Master::assignTask(){
+string Master::assignMapTask(){
     logRAII logRAIIObj(__FUNCTION__);
-    logger.info("master assignTask begin");
 
     if(isMapDone()) return "empty";
-    if(!m_list.empty()){
+    if(!m_allMapTaskList.empty()){
         m_assign_lock.lock();
-        char* task = m_list.back(); //从工作队列取出一个待map的文件名
-        m_list.pop_back();            
+        char* task = m_allMapTaskList.back(); //从工作队列取出一个待map的文件名
+        m_allMapTaskList.pop_back();            
         m_assign_lock.unlock();
         waitMap(string(task));      //调用waitMap将取出的任务加入正在运行的map任务队列并等待计时线程
         return string(task);
@@ -113,41 +117,43 @@ string Master::assignTask(){
 void* Master::waitMapTask(void* arg){
 
     logRAII logRAIIObj(__FUNCTION__);
-    logger.info("master waitMapTask begin");
 
     Master* map = (Master*)arg;
-    // printf("wait maphash is %p\n", &map->master->finishedMapTask);
+    // printf("wait maphash is %p\n", &map->master->m_finishedMapTask);
     void* status;
     pthread_t tid;
     char op = 'm';
-    pthread_create(&tid, NULL, waitTime, &op);
-    pthread_join(tid, &status);  //join方式回收实现超时后解除阻塞
+    pthread_create(&tid, NULL, waitTime, &op);      //wait for worker's response
+    pthread_join(tid, &status);                     //join方式回收实现超时后解除阻塞,
     map->m_assign_lock.lock();
     //若超时后在对应的hashmap中没有该map任务完成的记录，重新将该任务加入工作队列
-    if(!map->finishedMapTask.count(map->runningMapWork[map->curMapIndex])){
-        printf("filename : %s is timeout\n", map->runningMapWork[map->curMapIndex].c_str());
-        // char text[map->runningMapWork[map->curMapIndex].size() + 1];
-        // strcpy(text, map->runningMapWork[map->curMapIndex].c_str());
-        // printf("text is %s\n", text);   打印正常的，该线程结束后text就变成空字符串了
-        const char* text = map->runningMapWork[map->curMapIndex].c_str();//这钟方式加入list后不会变成空字符串
-        map->m_list.push_back((char*)text);
-        map->curMapIndex++;
+    if(!map->m_finishedMapTask.count(map->m_pendingMapWork[map->m_curMapIndex])){
+        logger.info("filename : %s is timeout, it'll be readded into the m_allMapTaskList", 
+                        map->m_pendingMapWork[map->m_curMapIndex].c_str());
+
+        const char* text = map->m_pendingMapWork[map->m_curMapIndex].c_str();//这钟方式加入list后不会变成空字符串
+        map->m_allMapTaskList.push_back((char*)text);
+        map->m_curMapIndex++;
         map->m_assign_lock.unlock();
         return NULL;
     }
-    printf("filename : %s is finished at idx : %d\n", map->runningMapWork[map->curMapIndex].c_str(), map->curMapIndex);
-    map->curMapIndex++;
+    
+    logger.info("map for filename : %s is finished at idx : %d\n", map->m_pendingMapWork[map->m_curMapIndex].c_str(), map->m_curMapIndex);
+    
+    map->m_curMapIndex++;
     map->m_assign_lock.unlock();
 }
 
 void Master::waitMap(string filename){
 
     logRAII logRAIIObj(__FUNCTION__);
-    logger.info("master waitMap begin");
 
     m_assign_lock.lock();
-    runningMapWork.push_back(string(filename));  //将分配出去的map任务加入正在运行的工作队列
+    m_pendingMapWork.push_back(string(filename));  //将分配出去的map任务加入正在运行的工作队列
     m_assign_lock.unlock();
+
+    logger.info("task: %s has been added into m_pendingMapWork", filename.c_str());
+    
     pthread_t tid;
     pthread_create(&tid, NULL, waitMapTask, this); //创建一个用于回收计时线程及处理超时逻辑的线程
     pthread_detach(tid);
@@ -157,12 +163,13 @@ void Master::waitMap(string filename){
 void* Master::waitTime(void* arg){
 
     logRAII logRAIIObj(__FUNCTION__);
-    logger.info("master waitTime begin");
 
     char* op = (char*)arg;
     if(*op == 'm'){
+        logger.info("map task timeout: %d", MAP_TASK_TIMEOUT);
         sleep(MAP_TASK_TIMEOUT);
     }else if(*op == 'r'){
+        logger.info("reduce task timeout: %d", MAP_TASK_TIMEOUT);
         sleep(REDUCE_TASK_TIMEOUT);
     }
 }
@@ -170,7 +177,6 @@ void* Master::waitTime(void* arg){
 void* Master::waitReduceTask(void* arg){
 
     logRAII logRAIIObj(__FUNCTION__);
-    logger.info("master waitReduceTask begin");
 
     Master* reduce = (Master*)arg;
     void* status;
@@ -180,26 +186,24 @@ void* Master::waitReduceTask(void* arg){
     pthread_join(tid, &status);
     reduce->m_assign_lock.lock();
     //若超时后在对应的hashmap中没有该reduce任务完成的记录，将该任务重新加入工作队列
-    if(!reduce->finishedReduceTask.count(reduce->runningReduceWork[reduce->curReduceIndex])){
-        for(auto a : reduce->m_list) printf(" before insert %s\n", a);
-        reduce->reduceIndex.emplace_back(reduce->runningReduceWork[reduce->curReduceIndex]);
-        printf(" reduce%d is timeout\n", reduce->runningReduceWork[reduce->curReduceIndex]);
-        reduce->curReduceIndex++;
-        for(auto a : reduce->m_list) printf(" after insert %s\n", a);
+    if(!reduce->m_finishedReduceTask.count(reduce->m_runningReduceWork[reduce->m_curReduceIndex])){
+        reduce->m_allReduceTaskList.emplace_back(reduce->m_runningReduceWork[reduce->m_curReduceIndex]);
+        logger.info(" reduce task: %d is timeout", reduce->m_runningReduceWork[reduce->m_curReduceIndex]);
+        reduce->m_curReduceIndex++;
         reduce->m_assign_lock.unlock();
         return NULL;
     }
-    printf("%d reduce is completed\n", reduce->runningReduceWork[reduce->curReduceIndex]);
-    reduce->curReduceIndex++;
+    logger.info("%d reduce is completed\n", reduce->m_runningReduceWork[reduce->m_curReduceIndex]);
+    reduce->m_curReduceIndex++;
     reduce->m_assign_lock.unlock();
 }
 
 void Master::waitReduce(int reduceIdx){
     logRAII logRAIIObj(__FUNCTION__);
-    logger.info("master waitReduce begin");
+    logger.info("reduceIdx is: %d", reduceIdx);
 
     m_assign_lock.lock();
-    runningReduceWork.push_back(reduceIdx); //将分配出去的reduce任务加入正在运行的工作队列
+    m_runningReduceWork.push_back(reduceIdx); //将分配出去的reduce任务加入正在运行的工作队列
     m_assign_lock.unlock();
     pthread_t tid;
     pthread_create(&tid, NULL, waitReduceTask, this); //创建一个用于回收计时线程及处理超时逻辑的线程
@@ -208,25 +212,26 @@ void Master::waitReduce(int reduceIdx){
 
 void Master::setMapStat(string filename){
     logRAII logRAIIObj(__FUNCTION__);
-    logger.info("master setMapStat begin");
+    logger.info("set filename:%s to 1", filename.c_str());
 
     m_assign_lock.lock();
-    finishedMapTask[filename] = 1;  //通过worker的RPC调用修改map任务的完成状态
-    // printf("map task : %s is finished, maphash is %p\n", filename.c_str(), &finishedMapTask);
+    m_finishedMapTask[filename] = 1;  //通过worker的RPC调用修改map任务的完成状态
+    // printf("map task : %s is finished, maphash is %p\n", filename.c_str(), &m_finishedMapTask);
     m_assign_lock.unlock();
     return;
 }
 
 bool Master::isMapDone(){
     logRAII logRAIIObj(__FUNCTION__);
-    logger.info("master isMapDone begin");
 
     m_assign_lock.lock();
-    if(finishedMapTask.size() != fileNum){  //当统计map任务的hashmap大小达到文件数，map任务结束
+    if(m_finishedMapTask.size() != m_fileNum){  //当统计map任务的hashmap大小达到文件数，map任务结束
         m_assign_lock.unlock();
+        logger.info("Map undone");
         return false;
     }
     m_assign_lock.unlock();
+    logger.info("Map done");
     return true;
 }
 
@@ -235,10 +240,10 @@ int Master::assignReduceTask(){
     logger.info("master assignReduceTask begin");
     
     if(Done()) return -1;
-    if(!reduceIndex.empty()){
+    if(!m_allReduceTaskList.empty()){
         m_assign_lock.lock();
-        int reduceIdx = reduceIndex.back(); //取出reduce编号
-        reduceIndex.pop_back();
+        int reduceIdx = m_allReduceTaskList.back(); //取出reduce编号
+        m_allReduceTaskList.pop_back();
         m_assign_lock.unlock();
         waitReduce(reduceIdx);    //调用waitReduce将取出的任务加入正在运行的reduce任务队列并等待计时线程
         return reduceIdx;
@@ -249,20 +254,20 @@ int Master::assignReduceTask(){
 
 void Master::setReduceStat(int taskIndex){
     logRAII logRAIIObj(__FUNCTION__);
-    logger.info("master setReduceStat begin");
+    logger.info("set taskIndex: %d to 1", taskIndex);
     m_assign_lock.lock();
-    finishedReduceTask[taskIndex] = 1;  //通过worker的RPC调用修改reduce任务的完成状态
-    // printf(" reduce task%d is finished, reducehash is %p\n", taskIndex, &finishedReduceTask);
+    m_finishedReduceTask[taskIndex] = 1;  //通过worker的RPC调用修改reduce任务的完成状态
     m_assign_lock.unlock();
     return;
 }
 
 bool Master::Done(){
     logRAII logRAIIObj(__FUNCTION__);
-    logger.info("master Done begin");
     m_assign_lock.lock();
-    int len = finishedReduceTask.size(); //reduce的hashmap若是达到reduceNum，reduce任务及总任务完成,xpc: why?
+    int len = m_finishedReduceTask.size(); //reduce的hashmap若是达到reduceNum，reduce任务及总任务完成,xpc: why?
     m_assign_lock.unlock();
+    logger.info("reduce task has been done: %s", (len==m_reduceNum) ? "yes" : "no");
+    if(len == m_reduceNum) printf("reduce task has been done");
     return len == m_reduceNum;
 }
 
@@ -279,11 +284,11 @@ int main(int argc, char* argv[]){
     // alarm(10);
     buttonrpc server;
     server.as_server(5555);
-    Master master(1, 1);
+    Master master(3, 4);
     master.GetAllFile(argv, argc);
     server.bind("getMapNum", &Master::getMapNum, &master);
     server.bind("getReduceNum", &Master::getReduceNum, &master);
-    server.bind("assignTask", &Master::assignTask, &master);
+    server.bind("assignMapTask", &Master::assignMapTask, &master);
     server.bind("setMapStat", &Master::setMapStat, &master);
     server.bind("isMapDone", &Master::isMapDone, &master);
     server.bind("assignReduceTask", &Master::assignReduceTask, &master);

@@ -21,6 +21,8 @@
 
 #include "logRAII.h"
 
+#include <algorithm>
+
 using namespace std;
 
 log4cpp::Category& logger = log4cpp::Category::getInstance("worker");
@@ -33,8 +35,8 @@ int disabledMapId = 0;   //用于人为让特定map任务超时的Id
 int disabledReduceId = 0;   //用于人为让特定reduce任务超时的Id
 
 //定义master分配给自己的map和reduce任务数，实际无所谓随意创建几个，我是为了更方便测试代码是否ok
-int map_task_num;
-int reduce_task_num;
+int m_mapTaskNum;
+int m_reduceTaskNum;
 
 //定义实际处理map任务的数组，存放map任务号
 //(map任务大于总文件数时，多线程分配ID不一定分配到正好增序的任务号，如10个map任务，总共8个文件，可能就是0,1,2,4,5,7,8,9)
@@ -52,34 +54,30 @@ MapFunc mapF;
 ReduceFunc reduceF;
 
 //给每个map线程分配的任务ID，用于写中间文件时的命名
-int MapId = 0;            
+int m_MapId = 0;            
 pthread_mutex_t map_mutex;
 pthread_cond_t cond;
 int fileId = 0;
 
 //对每个字符串求hash找到其对应要分配的reduce线程
 int ihash(string str){
-
-    logRAII logRAIIObj(__FUNCTION__);
-    logger.info("worker ihash begin");
-
     int sum = 0;
     for(int i = 0; i < str.size(); i++){
         sum += (str[i] - '0');
     }
-    return sum % reduce_task_num;
+    return sum % m_reduceTaskNum;
 }
 
 //删除所有写入中间值的临时文件
 void removeFiles(){
 
     logRAII logRAIIObj(__FUNCTION__);
-    logger.info("worker removeFiles begin");
+    logger.info("remove all intermediate Files generated last time");
 
 
     string path;
-    for(int i = 0; i < map_task_num; i++){
-        for(int j = 0; j < reduce_task_num; j++){
+    for(int i = 0; i < m_mapTaskNum; i++){
+        for(int j = 0; j < m_reduceTaskNum; j++){
             path = "mr-" + to_string(i) + "-" + to_string(j);
             int ret = access(path.c_str(), F_OK);
             if(ret == 0) remove(path.c_str());
@@ -88,10 +86,10 @@ void removeFiles(){
 }
 
 //取得  key:filename, value:content 的kv对作为map任务的输入
-KeyValue getContent(char* file){
+KeyValue getContentForFilePath(char* file){
 
     logRAII logRAIIObj(__FUNCTION__);
-    logger.info("worker getContent begin");
+    logger.info("file is: %s", file);
 
     int fd = open(file, O_RDONLY);
     int length = lseek(fd, 0, SEEK_END);
@@ -107,6 +105,7 @@ KeyValue getContent(char* file){
     kv.key = string(file);
     kv.value = string(buf);
     close(fd);
+    logger.info("key:%s, value:%s", kv.key.c_str(),kv.value.c_str());
     return kv;
 }
 
@@ -114,10 +113,10 @@ KeyValue getContent(char* file){
 void writeKV(int fd, const KeyValue& kv){
 
     logRAII logRAIIObj(__FUNCTION__);
-    logger.info("worker writeKV begin");
 
     string tmp = kv.key + ",1 ";
     int len = write(fd, tmp.c_str(), tmp.size());
+    logger.info("intermediate:%s,size:%d,len:%d",tmp,tmp.size(),len);
     if(len == -1){
         perror("write");
         exit(-1);
@@ -129,12 +128,13 @@ void writeKV(int fd, const KeyValue& kv){
 void writeInDisk(const vector<KeyValue>& kvs, int mapTaskIdx){
 
     logRAII logRAIIObj(__FUNCTION__);
-    logger.info("worker writeInDisk begin");
+    logger.info("mapTaskId: %d", mapTaskIdx);
 
     for(const auto& v : kvs){
         int reduce_idx = ihash(v.key);
         string path;
         path = "mr-" + to_string(mapTaskIdx) + "-" + to_string(reduce_idx);
+        logger.info("key:%s, reduce_idx(hash):%d, intermediate path:%s", v.key.c_str(), reduce_idx, path.c_str());
         int ret = access(path.c_str(), F_OK);
         if(ret == -1){
             int fd = open(path.c_str(), O_WRONLY | O_CREAT | O_APPEND, 0664);
@@ -183,10 +183,10 @@ string split(string text){
 }
 
 //获取对应reduce编号的所有中间文件
-vector<string> getAllfile(string path, int op){
+vector<string> getAllInterMedfilesForReduceNum(string path, int op){
 
     logRAII logRAIIObj(__FUNCTION__);
-    logger.info("worker getAllfile begin");
+    logger.info("path:%s, reduceTaskNum:%d", path.c_str(), op);
 
 
     DIR *dir = opendir(path.c_str());
@@ -207,6 +207,7 @@ vector<string> getAllfile(string path, int op){
         string cmp_str = filename.substr(len - oplen, oplen);
         if(cmp_str == to_string(op)){
             ret.push_back(entry->d_name);
+            logger.info("fileName:%s",entry->d_name);
         }
     }
     closedir(dir);
@@ -216,32 +217,45 @@ vector<string> getAllfile(string path, int op){
 //对于一个ReduceTask，获取所有相关文件并将value的list以string写入vector
 //vector中每个元素的形式为"abc 11111";
 vector<KeyValue> Myshuffle(int reduceTaskNum){
-
     logRAII logRAIIObj(__FUNCTION__);
-    logger.info("worker Myshuffle begin");
+    logger.info("reduceTaskNum:%d", reduceTaskNum);
 
     string path;
     vector<string> str;
     str.clear();
-    vector<string> filename = getAllfile(".", reduceTaskNum);
+    vector<string> filename = getAllInterMedfilesForReduceNum(".", reduceTaskNum);
+    
     unordered_map<string, string> hash;
     for(int i = 0; i < filename.size(); i++){
         path = filename[i];
         char text[path.size() + 1];
         strcpy(text, path.c_str());
-        KeyValue kv = getContent(text);
+        KeyValue kv = getContentForFilePath(text);
         string context = kv.value;
         vector<string> retStr = split(context, ' ');
+        
+   
+        logger.info("fileName:%s,context:%s,splitted:%s", path.c_str(), context.c_str(), std::accumulate(retStr.begin(),retStr.end(),std::string(),[&](const auto& x, const auto& y){
+            return x+y+" ";    
+        }).c_str());
+        
+
         str.insert(str.end(), retStr.begin(), retStr.end());
     }
+
+    logger.info("all words:%s",std::accumulate(str.begin(),str.end(),std::string(),[&](const auto& x, const auto& y){
+            return x+y+" ";    
+        }).c_str());
     for(const auto& a : str){
         hash[split(a)] += "1";
     }
+    
     vector<KeyValue> retKvs;
     KeyValue tmpKv;
     for(const auto& a : hash){
         tmpKv.key = a.first;
         tmpKv.value = a.second;
+        logger.info("word:%s,fre:%s",a.first.c_str(),a.second.c_str());
         retKvs.push_back(tmpKv);
     }
     sort(retKvs.begin(), retKvs.end(), [](KeyValue& kv1, KeyValue& kv2){
@@ -250,7 +264,7 @@ vector<KeyValue> Myshuffle(int reduceTaskNum){
     return retKvs;
 }
 
-
+//paralel field
 void* mapWorker(void* arg){
 
     logRAII logRAIIObj(__FUNCTION__);
@@ -260,20 +274,22 @@ void* mapWorker(void* arg){
     buttonrpc client;
     client.as_client("127.0.0.1", 5555);
     pthread_mutex_lock(&map_mutex);
-    int mapTaskIdx = MapId++;
+    int mapTaskIdx = m_MapId++;
     pthread_mutex_unlock(&map_mutex);
+    logger.info("current map task id: %d", mapTaskIdx);
     bool ret = false;
     while(1){
     //2、通过RPC从Master获取任务
     //client.set_timeout(10000);
         ret = client.call<bool>("isMapDone").val();
         if(ret){
+            logger.info("master told me that map has been done, broacast condition variable to start reduce process");
             pthread_cond_broadcast(&cond);
             return NULL;
         }
-        string taskTmp = client.call<string>("assignTask").val();   //通过RPC返回值取得任务，在map中即为文件名
+        string taskTmp = client.call<string>("assignMapTask").val();   //通过RPC返回值取得任务，在map中即为文件名
         if(taskTmp == "empty") continue; 
-        printf("%d get the task : %s\n", mapTaskIdx, taskTmp.c_str());
+        logger.info("mapTaskId is:%d, get the task: %s from master", mapTaskIdx, taskTmp.c_str());
         pthread_mutex_lock(&map_mutex);
 
         //------------------------自己写的测试超时重转发的部分---------------------
@@ -282,7 +298,7 @@ void* mapWorker(void* arg){
         if(disabledMapId == 1 || disabledMapId == 3 || disabledMapId == 5){
             disabledMapId++;
             pthread_mutex_unlock(&map_mutex);
-            printf("%d recv task : %s  is stop\n", mapTaskIdx, taskTmp.c_str());
+            logger.info("current map task id:%d, task:%s, time out!", mapTaskIdx, taskTmp.c_str());
             while(1){
                 sleep(2);
             }
@@ -295,14 +311,16 @@ void* mapWorker(void* arg){
     //3、拆分任务，任务返回为文件path及map任务编号，将filename及content封装到kv的key及value中
         char task[taskTmp.size() + 1];
         strcpy(task, taskTmp.c_str());
-        KeyValue kv = getContent(task);
+        KeyValue kv = getContentForFilePath(task);
 
     //4、执行map函数，然后将中间值写入本地
         vector<KeyValue> kvs = mapF(kv);
+        logger.info("after mapF, kvs:");
+        std::for_each(kvs.begin(),kvs.end(),[&](const auto& kv){logger.info("\tkey:%s,val:%s",kv.key.c_str(),kv.value.c_str());});
         writeInDisk(kvs, mapTaskIdx);
 
     //5、发送RPC给master告知任务已完成
-        printf("%d finish the task : %s\n", mapTaskIdx, taskTmp.c_str());
+        logger.info("map task id: %d, has finished the task : %s", mapTaskIdx, taskTmp.c_str());
         client.call<void>("setMapStat", taskTmp);
 
     }
@@ -330,7 +348,6 @@ void myWrite(int fd, vector<string>& str){
 void* reduceWorker(void* arg){
 
     logRAII logRAIIObj(__FUNCTION__);
-    logger.info("worker reduceWorker begin");
 
     //removeFiles();
     buttonrpc client;
@@ -340,18 +357,19 @@ void* reduceWorker(void* arg){
         //若工作完成直接退出reduce的worker线程
         ret = client.call<bool>("Done").val();
         if(ret){
+            logger.info("master tole me reduce has been done");
             return NULL;
         }
         int reduceTaskIdx = client.call<int>("assignReduceTask").val();
         if(reduceTaskIdx == -1) continue;
-        printf("%ld get the task%d\n", pthread_self(), reduceTaskIdx);
+        logger.info("get the reduce task:%d from master", reduceTaskIdx);
         pthread_mutex_lock(&map_mutex);
 
         //人为设置的crash线程，会导致超时，用于超时功能的测试
         if(disabledReduceId == 1 || disabledReduceId == 3 || disabledReduceId == 5){
             disabledReduceId++;
             pthread_mutex_unlock(&map_mutex);
-            printf("recv task%d reduceTaskIdx is stop in %ld\n", reduceTaskIdx, pthread_self());
+            logger.info("the reduce task: %d time out!", reduceTaskIdx);
             while(1){
                 sleep(2);
             }
@@ -362,7 +380,9 @@ void* reduceWorker(void* arg){
 
         //取得reduce任务，读取对应文件，shuffle后调用reduceFunc进行reduce处理
         vector<KeyValue> kvs = Myshuffle(reduceTaskIdx);
+        logger.info("after shuffle: %s", std::accumulate(kvs.begin(),kvs.end(),std::string(),[](const auto& x, const auto& y){return x+y.key+":"+y.value+"\t";}).c_str());
         vector<string> ret = reduceF(kvs, reduceTaskIdx);
+        logger.info("after reduceF: %s", std::accumulate(ret.begin(),ret.end(),std::string(),[](const auto& x, const auto& y){return x+y+" ";}).c_str());
         vector<string> str;
         for(int i = 0; i < kvs.size(); i++){
             str.push_back(kvs[i].key + " " + ret[i]);
@@ -370,8 +390,9 @@ void* reduceWorker(void* arg){
         string filename = "mr-out-" + to_string(reduceTaskIdx);
         int fd = open(filename.c_str(), O_WRONLY | O_CREAT | O_APPEND, 0664);
         myWrite(fd, str);
+        logger.info("final output file:%s,final content needed to write: %s",filename.c_str(), std::accumulate(str.begin(),str.end(),std::string(),[](const auto& x, const auto& y){return x+y+" ";}).c_str());
         close(fd);
-        printf("%ld finish the task%d\n", pthread_self(), reduceTaskIdx);
+        logger.info("the reduce task is: %d has been finished", pthread_self(), reduceTaskIdx);
         client.call<bool>("setReduceStat", reduceTaskIdx);  //最终文件写入磁盘并发起RPCcall修改reduce状态
     }
 }
@@ -379,7 +400,7 @@ void* reduceWorker(void* arg){
 //删除最终输出文件，用于程序第二次执行时清除上次保存的结果
 void removeOutputFiles(){
     logRAII logRAIIObj(__FUNCTION__);
-    logger.info("worker removeOutputFiles begin");
+    logger.info("remove all output files generated last time");
     string path;
     for(int i = 0; i < MAX_REDUCE_NUM; i++){
         path = "mr-out-" + to_string(i);
@@ -421,34 +442,42 @@ int main(){
     buttonrpc work_client;
     work_client.as_client("127.0.0.1", 5555);
     work_client.set_timeout(5000);
-    map_task_num = work_client.call<int>("getMapNum").val();
-    reduce_task_num = work_client.call<int>("getReduceNum").val();
+    m_mapTaskNum = work_client.call<int>("getMapNum").val();
+    m_reduceTaskNum = work_client.call<int>("getReduceNum").val();
+    logger.info("ip:%s,port:%d,timeout:%d,mapTaskNum from master:%d, reduceTaskNum from master:%d",
+                    "127.0.0.1", 5555, 5000, m_mapTaskNum, m_reduceTaskNum);
+
     removeFiles();          //若有，则清理上次输出的中间文件
     removeOutputFiles();    //清理上次输出的最终文件
 
     //创建多个map及reduce的worker线程
-    pthread_t tidMap[map_task_num];
-    pthread_t tidReduce[reduce_task_num];
-    for(int i = 0; i < map_task_num; i++){
+    pthread_t tidMap[m_mapTaskNum];
+    pthread_t tidReduce[m_reduceTaskNum];
+    logger.info("begin map process");
+    for(int i = 0; i < m_mapTaskNum; i++){
         pthread_create(&tidMap[i], NULL, mapWorker, NULL);
         pthread_detach(tidMap[i]);
     }
+    logger.info("wait for reduce process");
     pthread_mutex_lock(&map_mutex);
     pthread_cond_wait(&cond, &map_mutex);
     pthread_mutex_unlock(&map_mutex);
-    for(int i = 0; i < reduce_task_num; i++){
+    logger.info("begin reduce process");
+    for(int i = 0; i < m_reduceTaskNum; i++){
         pthread_create(&tidReduce[i], NULL, reduceWorker, NULL);
         pthread_detach(tidReduce[i]);
     }
+
     while(1){
         if(work_client.call<bool>("Done").val()){
+            logger.info("all reduce task has been done");
             break;
         }
         sleep(1);
     }
-
+    printf("worker has done his work!\n");
     //任务完成后清理中间文件，关闭打开的动态库，释放资源
-    removeFiles();
+    // removeFiles();
     dlclose(handle);
     pthread_mutex_destroy(&map_mutex);
     pthread_cond_destroy(&cond);

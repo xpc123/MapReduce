@@ -1,4 +1,4 @@
-#include "logRAII.h"
+#include "../../include/logRAII.h"
 
 
 logRAII::logRAII(const std::string& func)

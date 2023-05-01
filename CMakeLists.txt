@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.16)
 project (MapReduce)
 
 # 设置C++标准为 C++ 11
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++11 -W -Wall -Wextra -g")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++17 -W -Wall -Wextra -g")
 
 include_directories(include)
 

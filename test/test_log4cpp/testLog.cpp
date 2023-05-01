@@ -2,38 +2,24 @@
 #include <log4cpp/PropertyConfigurator.hh>
 #include "log4cpp/NDC.hh"
 #include <thread>
-// #define LOG(msg)\
-//         do{\
-//             log4cpp::Category& logger = log4cpp::Category::getInstance("sample");\
-//             logger.info(msg);\
-//         }while(0);
 
-struct logRAII{
-    logRAII(const std::string& func){
-        log4cpp::NDC::push(func);
-    }
-    void log(const std::string& msg){
-        log4cpp::Category& logger = log4cpp::Category::getInstance("sample");
-        logger.info(msg);
-    }
-    ~logRAII(){
-        log4cpp::NDC::pop();
-    }
-};
+#include "../../include/logRAII.h"
+
+log4cpp::Category& logger = log4cpp::Category::getInstance("worker");
 
 void test2()
 {
     logRAII lR(__FUNCTION__);
-   lR.log("enter test2");
-   lR.log("enter test22");
-   lR.log("enter test222");
+   logger.info("enter test2");
+   logger.info("enter test22");
+   logger.info("enter test222");
 }
 
 void test()
 {
     logRAII lR(__FUNCTION__);
-    lR.log("enter test1");
-    lR.log("enter test11");
+    logger.info("enter test1");
+    logger.info("enter test11");
     test2();
 }
 
@@ -43,7 +29,9 @@ int main()
     log4cpp::PropertyConfigurator::configure("/home/xpc/cppProject/6.824/src/MapReduce/test/test_log4cpp/log.conf");
     // 输出日志
     logRAII lR(__FUNCTION__);
-    lR.log("enter main!");
+
+    std::string xpc="xinpengcheng";
+    logger.info("enter main:%s", xpc.c_str());
 
     std::thread threads[10];
     for (int i = 0; i < 10; i++) {
